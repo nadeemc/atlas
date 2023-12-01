@@ -1,4 +1,4 @@
-module github.com/nadeemc/atlas
+module ariga.io/atlas
 
 go 1.21
 

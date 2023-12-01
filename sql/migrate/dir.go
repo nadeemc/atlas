@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -488,15 +487,6 @@ var (
 	templateFuncs = template.FuncMap{
 		"upper": strings.ToUpper,
 		"now":   func() string { return time.Now().UTC().Format("20060102150405") },
-		"jsondecode": func(s string) map[string]any {
-			var v map[string]any
-
-			if err := json.Unmarshal([]byte(s), &v); err != nil {
-				panic(fmt.Errorf("can not unmarshal %q: %w", s, err))
-			}
-
-			return v
-		},
 	}
 	// DefaultFormatter is a default implementation for Formatter.
 	DefaultFormatter = TemplateFormatter{
