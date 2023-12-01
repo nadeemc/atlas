@@ -9,6 +9,7 @@ package cmdext
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -408,7 +409,20 @@ func TemplateDir(ctx *hcl.EvalContext, block *hclsyntax.Block) (cty.Value, error
 	if files, err := dir.Files(); err != nil || len(files) > 0 {
 		dir.Reset()
 	}
-	t := template.New("template_dir").Option("missingkey=error")
+
+	var funcs = template.FuncMap{
+		"jsondecode": func(s string) map[string]any {
+			var v map[string]any
+
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
+				panic(fmt.Errorf("can not unmarshal %q: %w", s, err))
+			}
+
+			return v
+		},
+	}
+
+	t := template.New("template_dir").Option("missingkey=error").Funcs(funcs)
 	err := filepath.Walk(args.Path, func(path string, d os.FileInfo, err error) error {
 		if err != nil {
 			return fmt.Errorf("walk path %s: %w", path, err)
