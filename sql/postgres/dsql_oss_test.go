@@ -56,30 +56,45 @@ func TestDSQL_JSONColumnValidation(t *testing.T) {
 	require.NoError(t, err)
 	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
 
-	// Test ColumnChange rejects JSON types
+	table := &schema.Table{Name: "users"}
+
+	// Test ColumnChange rejects JSON type
 	from := &schema.Column{
 		Name: "data",
 		Type: &schema.ColumnType{
 			Type: &schema.StringType{T: TypeText},
 		},
 	}
-	to := &schema.Column{
+	toJSON := &schema.Column{
 		Name: "data",
 		Type: &schema.ColumnType{
 			Type: &schema.JSONType{T: TypeJSON},
 		},
 	}
 
-	table := &schema.Table{Name: "users"}
-	_, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, to, nil)
+	_, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSON, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "JSON")
+	require.Contains(t, err.Error(), "json")
+	require.Contains(t, err.Error(), "not supported")
+
+	// Test ColumnChange rejects JSONB type
+	toJSONB := &schema.Column{
+		Name: "data",
+		Type: &schema.ColumnType{
+			Type: &schema.JSONType{T: TypeJSONB},
+		},
+	}
+
+	_, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSONB, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "aurora dsql")
+	require.Contains(t, err.Error(), "jsonb")
 	require.Contains(t, err.Error(), "not supported")
 }
 
 func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
-	// This test verifies that inspecting a schema with JSON columns
+	// This test verifies that inspecting a schema with JSON/JSONB columns
 	// returns an error for DSQL
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
@@ -96,9 +111,10 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 	drv, err := Open(db)
 	require.NoError(t, err)
 	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
+	dsqlInspector := dsqlDrv.Inspector.(*dsqlInspect)
 
-	// Create a mock schema with a JSON column
-	s := schema.New("test").
+	// Test validation with JSON column
+	sWithJSON := schema.New("test").
 		AddTables(
 			schema.NewTable("users").
 				AddColumns(
@@ -107,16 +123,31 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 				),
 		)
 
-	// The inspection itself doesn't query the database in this test,
-	// but we're testing the validation logic
-	dsqlInspector := dsqlDrv.Inspector.(*dsqlInspect)
-	err = dsqlInspector.validateNoJSONColumns(s)
+	err = dsqlInspector.validateNoJSONColumns(sWithJSON)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "JSON")
+	require.Contains(t, err.Error(), "json")
 	require.Contains(t, err.Error(), "not supported")
 	require.Contains(t, err.Error(), "users")
 	require.Contains(t, err.Error(), "data")
+
+	// Test validation with JSONB column
+	sWithJSONB := schema.New("test").
+		AddTables(
+			schema.NewTable("posts").
+				AddColumns(
+					schema.NewColumn("metadata").
+						SetType(&schema.JSONType{T: TypeJSONB}),
+				),
+		)
+
+	err = dsqlInspector.validateNoJSONColumns(sWithJSONB)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "aurora dsql")
+	require.Contains(t, err.Error(), "jsonb")
+	require.Contains(t, err.Error(), "not supported")
+	require.Contains(t, err.Error(), "posts")
+	require.Contains(t, err.Error(), "metadata")
 }
 
 func TestDSQL_NoLock(t *testing.T) {

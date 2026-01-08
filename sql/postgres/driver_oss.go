@@ -45,8 +45,10 @@ type (
 		accessMethod string
 		// System variables that are set on `Open`.
 		version int
-		crdb    bool
-		dsql    bool
+		// crdb indicates if the connection is to CockroachDB.
+		crdb bool
+		// dsql indicates if the connection is to Aurora DSQL.
+		dsql bool
 	}
 )
 
@@ -97,6 +99,12 @@ func opener(_ context.Context, u *url.URL) (*sqlclient.Client, error) {
 }
 
 // Open opens a new PostgreSQL driver.
+// It detects the database variant (regular PostgreSQL, CockroachDB, or Aurora DSQL)
+// and returns the appropriate driver implementation with variant-specific logic.
+//
+// Aurora DSQL is detected by checking if the version string contains "aurora_dsql".
+// When detected, it returns a noLockDriver with dsqlDiff and dsqlInspect implementations
+// that enforce DSQL limitations (no JSON types, no advisory locks).
 func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 	c := &conn{ExecQuerier: db}
 	rows, err := db.QueryContext(context.Background(), paramsQuery)
@@ -114,7 +122,8 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 		return nil, fmt.Errorf("postgres: unsupported postgres version: %d", c.version)
 	}
 	c.accessMethod = am.String
-	// Detect Aurora DSQL by checking the version string for "aurora_dsql"
+	// Detect Aurora DSQL by checking the version string for "aurora_dsql".
+	// Aurora DSQL does not support pg_try_advisory_lock or JSON column types.
 	if c.dsql = sqlx.ValidString(versionStr) && strings.Contains(strings.ToLower(versionStr.String), "aurora_dsql"); c.dsql {
 		return noLockDriver{
 			&Driver{
