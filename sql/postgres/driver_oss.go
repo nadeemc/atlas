@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"ariga.io/atlas/schemahcl"
@@ -45,6 +46,7 @@ type (
 		// System variables that are set on `Open`.
 		version int
 		crdb    bool
+		dsql    bool
 	}
 )
 
@@ -61,7 +63,7 @@ func init() {
 		DriverName,
 		sqlclient.OpenerFunc(opener),
 		sqlclient.RegisterDriverOpener(Open),
-		sqlclient.RegisterFlavours("postgresql"),
+		sqlclient.RegisterFlavours("postgresql", "aurora_dsql", "dsql"),
 		sqlclient.RegisterCodec(codec, codec),
 		sqlclient.RegisterURLParser(parser{}),
 	)
@@ -101,8 +103,8 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: scanning system variables: %w", err)
 	}
-	var ver, am, crdb sql.NullString
-	if err := sqlx.ScanOne(rows, &ver, &am, &crdb); err != nil {
+	var ver, am, crdb, versionStr sql.NullString
+	if err := sqlx.ScanOne(rows, &ver, &am, &crdb, &versionStr); err != nil {
 		return nil, fmt.Errorf("postgres: scanning system variables: %w", err)
 	}
 	if c.version, err = strconv.Atoi(ver.String); err != nil {
@@ -112,6 +114,17 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 		return nil, fmt.Errorf("postgres: unsupported postgres version: %d", c.version)
 	}
 	c.accessMethod = am.String
+	// Detect Aurora DSQL by checking the version string for "aurora_dsql"
+	if c.dsql = sqlx.ValidString(versionStr) && strings.Contains(strings.ToLower(versionStr.String), "aurora_dsql"); c.dsql {
+		return noLockDriver{
+			&Driver{
+				conn:        c,
+				Differ:      &sqlx.Diff{DiffDriver: &dsqlDiff{diff{c}}},
+				Inspector:   &dsqlInspect{inspect{c}},
+				PlanApplier: &planApply{c},
+			},
+		}, nil
+	}
 	if c.crdb = sqlx.ValidString(crdb); c.crdb {
 		return noLockDriver{
 			&Driver{

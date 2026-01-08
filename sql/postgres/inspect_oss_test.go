@@ -440,9 +440,9 @@ func TestDriver_InspectCRDBSchema(t *testing.T) {
 	mk := mock{m}
 	mk.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb
-----------------|------|-----
- 130000         | heap | cockroach
+  version       |  am  | crdb       | version_string
+----------------|------|------------|----------------
+ 130000         | heap | cockroach  | PostgreSQL 13.0 on x86_64
 `))
 	drv, err := Open(db)
 	require.NoError(t, err)
@@ -719,9 +719,9 @@ type mock struct {
 func (m mock) version(version string) {
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  setting       |  am  | crdb
-----------------|------|-----
- ` + version + `| heap | NULL
+  setting       |  am  | crdb | version_string
+----------------|------|------|----------------
+ ` + version + `| heap | NULL | PostgreSQL ` + version + `
 `))
 }
 
