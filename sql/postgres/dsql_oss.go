@@ -73,13 +73,10 @@ func (i *dsqlInspect) InspectRealm(ctx context.Context, opts *schema.InspectReal
 func (i *dsqlInspect) convertJSONToText(s *schema.Schema) {
 	for _, t := range s.Tables {
 		for _, c := range t.Columns {
-			if jsonType, ok := c.Type.Type.(*schema.JSONType); ok {
+			if _, ok := c.Type.Type.(*schema.JSONType); ok {
 				// Convert JSON/JSONB to text type
 				c.Type.Type = &schema.StringType{T: TypeText}
 				c.Type.Raw = TypeText
-				// Store original type information in a comment or attribute if needed
-				// This allows tracking that the column was originally intended as JSON
-				_ = jsonType // Keep for reference
 			}
 		}
 	}
@@ -90,7 +87,7 @@ func (i *dsqlInspect) convertJSONToText(s *schema.Schema) {
 // but can return JSON data via casting in SELECT statements.
 func (dd *dsqlDiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (schema.Change, error) {
 	// Convert JSON/JSONB to text for Aurora DSQL
-	if jsonType, ok := to.Type.Type.(*schema.JSONType); ok {
+	if _, ok := to.Type.Type.(*schema.JSONType); ok {
 		// Create a new column with text type instead of JSON
 		modifiedTo := *to
 		modifiedTo.Type = &schema.ColumnType{
@@ -98,7 +95,6 @@ func (dd *dsqlDiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, o
 			Raw:  TypeText,
 			Null: to.Type.Null,
 		}
-		_ = jsonType // Keep for reference
 		return dd.diff.ColumnChange(fromT, from, &modifiedTo, opts)
 	}
 	return dd.diff.ColumnChange(fromT, from, to, opts)
