@@ -27,9 +27,7 @@ var (
 	queryTables      = sqltest.Escape(fmt.Sprintf(tablesQuery, "$1"))
 	queryChecks      = sqltest.Escape(fmt.Sprintf(checksQuery, "$2"))
 	queryColumns     = sqltest.Escape(fmt.Sprintf(columnsQuery, "$2"))
-	queryCRDBColumns = sqltest.Escape(fmt.Sprintf(crdbColumnsQuery, "$2"))
 	queryIndexes     = sqltest.Escape(fmt.Sprintf(indexesAbove15, "$2"))
-	queryCRDBIndexes = sqltest.Escape(fmt.Sprintf(crdbIndexesQuery, "$2"))
 )
 
 func TestDriver_InspectTable(t *testing.T) {
@@ -434,77 +432,6 @@ logs3      | c5         | integer   | integer   | NO          |                |
 	}, key.Parts)
 }
 
-func TestDriver_InspectCRDBSchema(t *testing.T) {
-	db, m, err := sqlmock.New()
-	require.NoError(t, err)
-	mk := mock{m}
-	mk.ExpectQuery(sqltest.Escape(paramsQuery)).
-		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb
-----------------|------|-----
- 130000         | heap | cockroach
-`))
-	drv, err := Open(db)
-	require.NoError(t, err)
-	mk.ExpectQuery(sqltest.Escape(fmt.Sprintf(schemasQueryArgs, "= $1"))).
-		WithArgs("public").
-		WillReturnRows(sqltest.Rows(`
- schema_name | comment 
--------------+---------
- public      | nil
-`))
-	mk.tableExists("public", "users", true)
-	mk.ExpectQuery(queryCRDBColumns).
-		WithArgs("public", "users").
-		WillReturnRows(sqltest.Rows(`
-table_name  | column_name | data_type | formatted | is_nullable |              column_default               | character_maximum_length | numeric_precision | datetime_precision | numeric_scale | interval_type | character_set_name | collation_name | is_identity | identity_start | identity_increment |   identity_last  |  identity_generation  | generation_expression | comment | typtype | typelem | oid | attnum 
-------------+-------------+-----------+-----------+-------------+-------------------------------------------+--------------------------+-------------------+--------------------+---------------+---------------+--------------------+----------------|-------------+----------------+--------------------+------------------+-----------------------+-----------------------+---------+---------+---------+-----+--------
-users       | a           | bigint    | bigint    | NO          |                                           |                          |                64 |                    |             0 |               |                    |                | NO          |                |                    |                  |                       |                       |         | b       |         | 20  |        
-users       | b           | bigint    | bigint    | NO          |                                           |                          |                64 |                    |             0 |               |                    |                | NO          |                |                    |                  |                       |                       |         | b       |         | 20  |        
-users       | c           | bigint    | bigint    | NO          |                                           |                          |                64 |                    |             0 |               |                    |                | NO          |                |                    |                  |                       |                       |         | b       |         | 20  |        
-users       | d           | bigint    | bigint    | NO          |                                           |                          |                64 |                    |             0 |               |                    |                | NO          |                |                    |                  |                       |                       |         | b       |         | 20  |        
-`))
-	mk.ExpectQuery(queryCRDBIndexes).
-		WithArgs("public", "users").
-		WillReturnRows(sqltest.Rows(`
-table_name  | index_name | column_name | primary | unique | constraint_type |                                   create_stmt                                   | predicate | expression | comment 
-------------+------------+-------------+---------+--------+-----------------+---------------------------------------------------------------------------------+-----------+------------+---------
-users       | idx1       | a           | false   | false  |                 | CREATE INDEX idx1 ON defaultdb.public.serial USING btree (a ASC)                |           | a          |  
-users       | idx2       | b           | false   | true   | u               | CREATE UNIQUE INDEX idx2 ON defaultdb.public.serial USING btree (b ASC)         |           | b          |  
-users       | idx3       | c           | false   | false  |                 | CREATE INDEX idx3 ON defaultdb.public.serial USING btree (c DESC)               |           | c          | boring 
-users       | idx4       | d           | false   | false  |                 | CREATE INDEX idx5 ON defaultdb.public.serial USING btree (d ASC) WHERE (d < 10) | d < 10    | d          |  
-users       | idx5       | a           | false   | false  |                 | CREATE INDEX idx5 ON defaultdb.public.serial USING btree (a ASC, b ASC, c ASC)  |           | a          |  
-users       | idx5       | b           | false   | false  |                 | CREATE INDEX idx5 ON defaultdb.public.serial USING btree (a ASC, b ASC, c ASC)  |           | b          |  
-users       | idx5       | c           | false   | false  |                 | CREATE INDEX idx5 ON defaultdb.public.serial USING btree (a ASC, b ASC, c ASC)  |           | c          |  
-`))
-	mk.noFKs()
-	mk.noChecks()
-	s, err := drv.InspectSchema(context.Background(), "public", &schema.InspectOptions{
-		Mode: schema.InspectSchemas | schema.InspectTables,
-	})
-	require.NoError(t, err)
-	tbl := s.Tables[0]
-	require.Equal(t, "users", tbl.Name)
-	columns := []*schema.Column{
-		{Name: "a", Type: &schema.ColumnType{Raw: "bigint", Type: &schema.IntegerType{T: "bigint"}}},
-		{Name: "b", Type: &schema.ColumnType{Raw: "bigint", Type: &schema.IntegerType{T: "bigint"}}},
-		{Name: "c", Type: &schema.ColumnType{Raw: "bigint", Type: &schema.IntegerType{T: "bigint"}}},
-		{Name: "d", Type: &schema.ColumnType{Raw: "bigint", Type: &schema.IntegerType{T: "bigint"}}},
-	}
-	indexes := []*schema.Index{
-		{Name: "idx1", Table: tbl, Attrs: []schema.Attr{&IndexType{T: "btree"}}, Parts: []*schema.IndexPart{{SeqNo: 1, C: columns[0]}}},
-		{Name: "idx2", Unique: true, Table: tbl, Attrs: []schema.Attr{&IndexType{T: "btree"}, &Constraint{T: "u"}}, Parts: []*schema.IndexPart{{SeqNo: 1, C: columns[1]}}},
-		{Name: "idx3", Table: tbl, Attrs: []schema.Attr{&IndexType{T: "btree"}, &schema.Comment{Text: "boring"}}, Parts: []*schema.IndexPart{{SeqNo: 1, C: columns[2], Desc: true}}},
-		{Name: "idx4", Table: tbl, Attrs: []schema.Attr{&IndexType{T: "btree"}, &IndexPredicate{P: `d < 10`}}, Parts: []*schema.IndexPart{{SeqNo: 1, C: columns[3]}}},
-		{Name: "idx5", Table: tbl, Attrs: []schema.Attr{&IndexType{T: "btree"}}, Parts: []*schema.IndexPart{{SeqNo: 1, C: columns[0]}, {SeqNo: 2, C: columns[1]}, {SeqNo: 3, C: columns[2]}}},
-	}
-	columns[0].Indexes = []*schema.Index{indexes[0], indexes[4]}
-	columns[1].Indexes = []*schema.Index{indexes[1], indexes[4]}
-	columns[2].Indexes = []*schema.Index{indexes[2], indexes[4]}
-	columns[3].Indexes = []*schema.Index{indexes[3]}
-	require.EqualValues(t, columns, tbl.Columns)
-	require.EqualValues(t, indexes, tbl.Indexes)
-}
 
 func TestDriver_InspectSchema(t *testing.T) {
 	db, m, err := sqlmock.New()
@@ -719,9 +646,9 @@ type mock struct {
 func (m mock) version(version string) {
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  setting       |  am  | crdb
-----------------|------|-----
- ` + version + `| heap | NULL
+  setting       |  am  | version_string
+----------------|------|----------------
+ ` + version + `| heap | PostgreSQL ` + version + `
 `))
 }
 

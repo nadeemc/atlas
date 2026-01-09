@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"ariga.io/atlas/schemahcl"
@@ -44,7 +45,8 @@ type (
 		accessMethod string
 		// System variables that are set on `Open`.
 		version int
-		crdb    bool
+		// dsql indicates if the connection is to Aurora DSQL.
+		dsql bool
 	}
 )
 
@@ -61,7 +63,7 @@ func init() {
 		DriverName,
 		sqlclient.OpenerFunc(opener),
 		sqlclient.RegisterDriverOpener(Open),
-		sqlclient.RegisterFlavours("postgresql"),
+		sqlclient.RegisterFlavours("postgresql", "aurora_dsql", "dsql"),
 		sqlclient.RegisterCodec(codec, codec),
 		sqlclient.RegisterURLParser(parser{}),
 	)
@@ -95,14 +97,20 @@ func opener(_ context.Context, u *url.URL) (*sqlclient.Client, error) {
 }
 
 // Open opens a new PostgreSQL driver.
+// It detects the database variant (regular PostgreSQL or Aurora DSQL)
+// and returns the appropriate driver implementation with variant-specific logic.
+//
+// Aurora DSQL is detected by checking if the version string contains "aurora_dsql".
+// When detected, it returns a noLockDriver with dsqlDiff and dsqlInspect implementations
+// that enforce DSQL limitations (no JSON types, no advisory locks).
 func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 	c := &conn{ExecQuerier: db}
 	rows, err := db.QueryContext(context.Background(), paramsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: scanning system variables: %w", err)
 	}
-	var ver, am, crdb sql.NullString
-	if err := sqlx.ScanOne(rows, &ver, &am, &crdb); err != nil {
+	var ver, am, versionStr sql.NullString
+	if err := sqlx.ScanOne(rows, &ver, &am, &versionStr); err != nil {
 		return nil, fmt.Errorf("postgres: scanning system variables: %w", err)
 	}
 	if c.version, err = strconv.Atoi(ver.String); err != nil {
@@ -112,12 +120,14 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 		return nil, fmt.Errorf("postgres: unsupported postgres version: %d", c.version)
 	}
 	c.accessMethod = am.String
-	if c.crdb = sqlx.ValidString(crdb); c.crdb {
+	// Detect Aurora DSQL by checking the version string for "aurora_dsql".
+	// Aurora DSQL does not support pg_try_advisory_lock or JSON column types.
+	if c.dsql = sqlx.ValidString(versionStr) && strings.Contains(strings.ToLower(versionStr.String), "aurora_dsql"); c.dsql {
 		return noLockDriver{
 			&Driver{
 				conn:        c,
-				Differ:      &sqlx.Diff{DiffDriver: &crdbDiff{diff{c}}},
-				Inspector:   &crdbInspect{inspect{c}},
+				Differ:      &sqlx.Diff{DiffDriver: &dsqlDiff{diff{c}}},
+				Inspector:   &dsqlInspect{inspect{c}},
 				PlanApplier: &planApply{c},
 			},
 		}, nil
@@ -242,7 +252,7 @@ func (d *Driver) RealmRestoreFunc(desired *schema.Realm) migrate.RestoreFunc {
 	// Default behavior for Postgres is to have a single "public" schema.
 	// In that case, all other schemas are dropped, but this one is cleared
 	// object by object. To keep process faster, we drop the schema and recreate it.
-	if !d.crdb && len(desired.Schemas) == 1 && desired.Schemas[0].Name == "public" {
+	if len(desired.Schemas) == 1 && desired.Schemas[0].Name == "public" {
 		if pb := desired.Schemas[0]; len(pb.Tables)+len(pb.Views)+len(pb.Funcs)+len(pb.Procs)+len(pb.Objects) == 0 {
 			return func(ctx context.Context) error {
 				current, err := d.InspectRealm(ctx, nil)
@@ -458,6 +468,7 @@ const (
 	TypeInt2     = "int2" // smallint.
 	TypeInt4     = "int4" // integer.
 	TypeInt8     = "int8" // bigint.
+	TypeInt64    = "int64" // CockroachDB-specific type (treated as bigint for compatibility)
 
 	TypeXID  = "xid"  // transaction identifier.
 	TypeXID8 = "xid8" // 64-bit transaction identifier.
@@ -474,6 +485,7 @@ const (
 	TypePath    = "path"
 	TypePolygon = "polygon"
 	TypePoint   = "point"
+	TypeGeometry = "geometry" // CockroachDB-specific type (spatial type)
 
 	TypeDate          = "date"
 	TypeTime          = "time"   // time without time zone
