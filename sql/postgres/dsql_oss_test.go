@@ -7,6 +7,7 @@
 package postgres
 
 import (
+	"net/url"
 	"testing"
 
 	"ariga.io/atlas/sql/internal/sqltest"
@@ -38,7 +39,7 @@ func TestDSQL_Detection(t *testing.T) {
 	require.True(t, dsqlDrv.conn.dsql)
 }
 
-func TestDSQL_JSONColumnValidation(t *testing.T) {
+func TestDSQL_JSONColumnConversion(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -57,11 +58,12 @@ func TestDSQL_JSONColumnValidation(t *testing.T) {
 
 	table := &schema.Table{Name: "users"}
 
-	// Test ColumnChange rejects JSON type
+	// Test ColumnChange converts JSON type to text
+	// When changing from integer to JSON, it should be converted to integer to text
 	from := &schema.Column{
 		Name: "data",
 		Type: &schema.ColumnType{
-			Type: &schema.StringType{T: TypeText},
+			Type: &schema.IntegerType{T: TypeInteger},
 		},
 	}
 	toJSON := &schema.Column{
@@ -71,13 +73,12 @@ func TestDSQL_JSONColumnValidation(t *testing.T) {
 		},
 	}
 
-	_, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSON, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "json")
-	require.Contains(t, err.Error(), "not supported")
+	change, err := dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSON, nil)
+	require.NoError(t, err)
+	// Change should be detected (integer -> text)
+	require.NotEqual(t, sqlx.NoChange, change)
 
-	// Test ColumnChange rejects JSONB type
+	// Test ColumnChange converts JSONB type to text
 	toJSONB := &schema.Column{
 		Name: "data",
 		Type: &schema.ColumnType{
@@ -85,16 +86,28 @@ func TestDSQL_JSONColumnValidation(t *testing.T) {
 		},
 	}
 
-	_, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSONB, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "jsonb")
-	require.Contains(t, err.Error(), "not supported")
+	change, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, toJSONB, nil)
+	require.NoError(t, err)
+	// Change should be detected (integer -> text)
+	require.NotEqual(t, sqlx.NoChange, change)
+	
+	// Test that changing from text to JSON results in no change (both are text in DSQL)
+	fromText := &schema.Column{
+		Name: "data",
+		Type: &schema.ColumnType{
+			Type: &schema.StringType{T: TypeText},
+		},
+	}
+	
+	change, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, fromText, toJSON, nil)
+	require.NoError(t, err)
+	// No change should be detected (text -> text)
+	require.Equal(t, sqlx.NoChange, change)
 }
 
 func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 	// This test verifies that inspecting a schema with JSON/JSONB columns
-	// returns an error for DSQL
+	// converts them to text for DSQL
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -112,7 +125,7 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
 	dsqlInspector := dsqlDrv.Inspector.(*dsqlInspect)
 
-	// Test validation with JSON column
+	// Test conversion with JSON column
 	sWithJSON := schema.New("test").
 		AddTables(
 			schema.NewTable("users").
@@ -122,15 +135,18 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 				),
 		)
 
-	err = dsqlInspector.validateNoJSONColumns(sWithJSON)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "json")
-	require.Contains(t, err.Error(), "not supported")
-	require.Contains(t, err.Error(), "users")
-	require.Contains(t, err.Error(), "data")
+	dsqlInspector.convertJSONToText(sWithJSON)
+	
+	// Verify the column was converted to text
+	table, ok := sWithJSON.Table("users")
+	require.True(t, ok)
+	col, ok := table.Column("data")
+	require.True(t, ok)
+	stringType, ok := col.Type.Type.(*schema.StringType)
+	require.True(t, ok)
+	require.Equal(t, TypeText, stringType.T)
 
-	// Test validation with JSONB column
+	// Test conversion with JSONB column
 	sWithJSONB := schema.New("test").
 		AddTables(
 			schema.NewTable("posts").
@@ -140,13 +156,16 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 				),
 		)
 
-	err = dsqlInspector.validateNoJSONColumns(sWithJSONB)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "aurora dsql")
-	require.Contains(t, err.Error(), "jsonb")
-	require.Contains(t, err.Error(), "not supported")
-	require.Contains(t, err.Error(), "posts")
-	require.Contains(t, err.Error(), "metadata")
+	dsqlInspector.convertJSONToText(sWithJSONB)
+	
+	// Verify the column was converted to text
+	table, ok = sWithJSONB.Table("posts")
+	require.True(t, ok)
+	col, ok = table.Column("metadata")
+	require.True(t, ok)
+	stringType, ok = col.Type.Type.(*schema.StringType)
+	require.True(t, ok)
+	require.Equal(t, TypeText, stringType.T)
 }
 
 func TestDSQL_NoLock(t *testing.T) {
@@ -172,46 +191,37 @@ func TestDSQL_NoLock(t *testing.T) {
 }
 
 func TestDSQL_URLSchemes(t *testing.T) {
-	// Test that DSQL URL schemes are registered
+	// Test that DSQL URL schemes are converted to postgres:// for DSN
 	tests := []struct {
-		name   string
-		scheme string
-		want   bool
+		name        string
+		url         string
+		expectedDSN string
 	}{
 		{
-			name:   "postgres scheme",
-			scheme: "postgres",
-			want:   true,
+			name:        "postgres scheme unchanged",
+			url:         "postgres://user:pass@host:5432/dbname?sslmode=disable",
+			expectedDSN: "postgres://user:pass@host:5432/dbname?sslmode=disable",
 		},
 		{
-			name:   "postgresql scheme",
-			scheme: "postgresql",
-			want:   true,
+			name:        "postgresql scheme unchanged",
+			url:         "postgresql://user:pass@host:5432/dbname?sslmode=disable",
+			expectedDSN: "postgresql://user:pass@host:5432/dbname?sslmode=disable",
 		},
 		{
-			name:   "aurora_dsql scheme",
-			scheme: "aurora_dsql",
-			want:   true,
-		},
-		{
-			name:   "dsql scheme",
-			scheme: "dsql",
-			want:   true,
-		},
-		{
-			name:   "unknown scheme",
-			scheme: "unknown",
-			want:   false,
+			name:        "dsql scheme converted to postgres",
+			url:         "dsql://user:pass@host:5432/dbname?sslmode=disable",
+			expectedDSN: "postgres://user:pass@host:5432/dbname?sslmode=disable",
 		},
 	}
 
+	p := parser{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Note: We can't directly test if the scheme is registered
-			// without accessing internal sqlclient package structures.
-			// This is a placeholder for documentation purposes.
-			// The actual registration happens in init() and is tested
-			// implicitly when the package is loaded.
+			u, err := url.Parse(tt.url)
+			require.NoError(t, err)
+			
+			result := p.ParseURL(u)
+			require.Equal(t, tt.expectedDSN, result.DSN)
 		})
 	}
 }

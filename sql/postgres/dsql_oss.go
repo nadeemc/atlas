@@ -8,7 +8,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
@@ -41,56 +40,66 @@ type (
 )
 
 // InspectSchema inspects and returns the schema description for Aurora DSQL.
-// Returns an error if the schema contains JSON/JSONB columns, which are not supported by DSQL.
+// Converts JSON/JSONB columns to text, as Aurora DSQL doesn't support JSON column types
+// but treats them as text internally.
 func (i *dsqlInspect) InspectSchema(ctx context.Context, name string, opts *schema.InspectOptions) (*schema.Schema, error) {
 	s, err := i.inspect.InspectSchema(ctx, name, opts)
 	if err != nil {
 		return nil, err
 	}
-	if err := i.validateNoJSONColumns(s); err != nil {
-		return nil, err
-	}
+	i.convertJSONToText(s)
 	return s, nil
 }
 
 // InspectRealm inspects and returns the realm description for Aurora DSQL.
-// Returns an error if any schema contains JSON/JSONB columns, which are not supported by DSQL.
+// Converts JSON/JSONB columns to text, as Aurora DSQL doesn't support JSON column types
+// but treats them as text internally.
 func (i *dsqlInspect) InspectRealm(ctx context.Context, opts *schema.InspectRealmOption) (*schema.Realm, error) {
 	r, err := i.inspect.InspectRealm(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	for _, s := range r.Schemas {
-		if err := i.validateNoJSONColumns(s); err != nil {
-			return nil, err
-		}
+		i.convertJSONToText(s)
 	}
 	return r, nil
 }
 
-// validateNoJSONColumns checks that no JSON or JSONB columns are present.
+// convertJSONToText converts JSON and JSONB column types to text.
 // Aurora DSQL does not support JSON column types, as documented in the
 // Aurora DSQL limitations: https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html
-// Both TypeJSON and TypeJSONB are represented by schema.JSONType with different T values.
-func (i *dsqlInspect) validateNoJSONColumns(s *schema.Schema) error {
+// However, it supports returning JSON in SELECT statements by casting text to json.
+// This method converts JSON/JSONB types to text for column definitions.
+func (i *dsqlInspect) convertJSONToText(s *schema.Schema) {
 	for _, t := range s.Tables {
 		for _, c := range t.Columns {
 			if jsonType, ok := c.Type.Type.(*schema.JSONType); ok {
-				return fmt.Errorf("aurora dsql: JSON column type %q is not supported in table %q, column %q", jsonType.T, t.Name, c.Name)
+				// Convert JSON/JSONB to text type
+				c.Type.Type = &schema.StringType{T: TypeText}
+				c.Type.Raw = TypeText
+				// Store original type information in a comment or attribute if needed
+				// This allows tracking that the column was originally intended as JSON
+				_ = jsonType // Keep for reference
 			}
 		}
 	}
-	return nil
 }
 
 // ColumnChange handles column changes for Aurora DSQL.
-// Returns an error if attempting to create or modify a column to use JSON/JSONB type,
-// which is not supported by Aurora DSQL.
-// Both TypeJSON and TypeJSONB are represented by schema.JSONType with different T values.
+// Converts JSON/JSONB types to text, as Aurora DSQL doesn't support JSON column types
+// but can return JSON data via casting in SELECT statements.
 func (dd *dsqlDiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (schema.Change, error) {
-	// Validate that we're not trying to create or modify a column to use JSON type
+	// Convert JSON/JSONB to text for Aurora DSQL
 	if jsonType, ok := to.Type.Type.(*schema.JSONType); ok {
-		return nil, fmt.Errorf("aurora dsql: JSON column type %q is not supported", jsonType.T)
+		// Create a new column with text type instead of JSON
+		modifiedTo := *to
+		modifiedTo.Type = &schema.ColumnType{
+			Type: &schema.StringType{T: TypeText},
+			Raw:  TypeText,
+			Null: to.Type.Null,
+		}
+		_ = jsonType // Keep for reference
+		return dd.diff.ColumnChange(fromT, from, &modifiedTo, opts)
 	}
 	return dd.diff.ColumnChange(fromT, from, to, opts)
 }
