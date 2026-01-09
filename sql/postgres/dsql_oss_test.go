@@ -90,7 +90,7 @@ func TestDSQL_JSONColumnConversion(t *testing.T) {
 	require.NoError(t, err)
 	// Change should be detected (integer -> text)
 	require.NotEqual(t, sqlx.NoChange, change)
-	
+
 	// Test that changing from text to JSON results in no change (both are text in DSQL)
 	fromText := &schema.Column{
 		Name: "data",
@@ -98,7 +98,7 @@ func TestDSQL_JSONColumnConversion(t *testing.T) {
 			Type: &schema.StringType{T: TypeText},
 		},
 	}
-	
+
 	change, err = dsqlDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, fromText, toJSON, nil)
 	require.NoError(t, err)
 	// No change should be detected (text -> text)
@@ -136,7 +136,7 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 		)
 
 	dsqlInspector.convertJSONToText(sWithJSON)
-	
+
 	// Verify the column was converted to text
 	table, ok := sWithJSON.Table("users")
 	require.True(t, ok)
@@ -157,7 +157,7 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 		)
 
 	dsqlInspector.convertJSONToText(sWithJSONB)
-	
+
 	// Verify the column was converted to text
 	table, ok = sWithJSONB.Table("posts")
 	require.True(t, ok)
@@ -219,7 +219,7 @@ func TestDSQL_URLSchemes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			u, err := url.Parse(tt.url)
 			require.NoError(t, err)
-			
+
 			result := p.ParseURL(u)
 			require.Equal(t, tt.expectedDSN, result.DSN)
 		})

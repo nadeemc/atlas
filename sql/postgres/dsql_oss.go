@@ -88,7 +88,7 @@ func (i *dsqlInspect) convertJSONToText(s *schema.Schema) {
 func (dd *dsqlDiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (schema.Change, error) {
 	// Convert JSON/JSONB to text for Aurora DSQL
 	if _, ok := to.Type.Type.(*schema.JSONType); ok {
-		// Create a new column with text type instead of JSON
+		// Create a modified column with text type instead of JSON, preserving all other attributes
 		modifiedTo := *to
 		modifiedTo.Type = &schema.ColumnType{
 			Type: &schema.StringType{T: TypeText},
