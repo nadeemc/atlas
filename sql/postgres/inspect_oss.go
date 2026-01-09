@@ -97,10 +97,6 @@ func (i *inspect) InspectRealm(ctx context.Context, opts *schema.InspectRealmOpt
 // referenced objects in the public schema (or any other default search_path) are returned
 // qualified in the inspection.
 func (i *inspect) noSearchPath(ctx context.Context) (func() error, error) {
-	if i.crdb {
-		// Skip logic for CockroachDB.
-		return func() error { return nil }, nil
-	}
 	rows, err := i.QueryContext(ctx, "SELECT current_setting('search_path'), set_config('search_path', '', false)")
 	if err != nil {
 		return nil, err
@@ -272,9 +268,6 @@ func (i *inspect) tables(ctx context.Context, realm *schema.Realm, opts *schema.
 // columns queries and appends the columns of the given table.
 func (i *inspect) columns(ctx context.Context, s *schema.Schema) error {
 	query := columnsQuery
-	if i.crdb {
-		query = crdbColumnsQuery
-	}
 	rows, err := i.querySchema(ctx, query, s)
 	if err != nil {
 		return fmt.Errorf("postgres: querying schema %q columns: %w", s.Name, err)
@@ -475,9 +468,6 @@ func (i *inspect) inspectEnums(ctx context.Context, r *schema.Realm) error {
 
 // indexes queries and appends the indexes of the given table.
 func (i *inspect) indexes(ctx context.Context, s *schema.Schema) error {
-	if i.crdb {
-		return i.crdbIndexes(ctx, s)
-	}
 	rows, err := i.querySchema(ctx, i.indexesQuery(), s)
 	if err != nil {
 		return fmt.Errorf("postgres: querying schema %q indexes: %w", s.Name, err)
@@ -1503,7 +1493,7 @@ func parseFmtType(t string) (s, n string) {
 
 const (
 	// Query to list runtime parameters.
-	paramsQuery = `SELECT current_setting('server_version_num'), current_setting('default_table_access_method', true), current_setting('crdb_version', true), version()`
+	paramsQuery = `SELECT current_setting('server_version_num'), current_setting('default_table_access_method', true), version()`
 
 	// Query to list database schemas.
 	schemasQuery = `
@@ -1514,7 +1504,7 @@ FROM
 	pg_catalog.pg_namespace ns
 	LEFT JOIN pg_depend AS dep ON dep.classid = 'pg_catalog.pg_namespace'::regclass::oid AND dep.objid = ns.oid AND dep.deptype = 'e'
 WHERE
-	nspname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'crdb_internal', 'pg_extension')
+	nspname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'pg_extension')
 	AND nspname NOT LIKE 'pg_%temp_%'
 	AND dep.objid IS NULL
 ORDER BY

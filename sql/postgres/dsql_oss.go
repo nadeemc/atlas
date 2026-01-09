@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 
+	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
 )
 
@@ -23,6 +24,20 @@ type (
 	// dsqlInspect implements inspection logic for Aurora DSQL, validating that
 	// schemas don't contain unsupported features like JSON column types.
 	dsqlInspect struct{ inspect }
+
+	// noLocker is an interface that represents a driver that does not support
+	// advisory locks. This is used for Aurora DSQL which doesn't support
+	// pg_try_advisory_lock or pg_advisory_lock.
+	noLocker interface {
+		migrate.Driver
+		schema.Normalizer
+	}
+
+	// noLockDriver wraps a noLocker to indicate that the driver doesn't
+	// support advisory lock functionality.
+	noLockDriver struct {
+		noLocker
+	}
 )
 
 // InspectSchema inspects and returns the schema description for Aurora DSQL.

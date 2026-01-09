@@ -24,9 +24,9 @@ func TestDSQL_Detection(t *testing.T) {
 	// Test that Aurora DSQL is detected via version string
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb | version_string
-----------------|------|------|---------------------------------------------
- 150000         | heap | NULL | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -36,7 +36,6 @@ func TestDSQL_Detection(t *testing.T) {
 	// Verify it's a DSQL driver by checking the underlying driver
 	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
 	require.True(t, dsqlDrv.conn.dsql)
-	require.False(t, dsqlDrv.conn.crdb)
 }
 
 func TestDSQL_JSONColumnValidation(t *testing.T) {
@@ -47,9 +46,9 @@ func TestDSQL_JSONColumnValidation(t *testing.T) {
 	// Setup DSQL driver
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb | version_string
-----------------|------|------|---------------------------------------------
- 150000         | heap | NULL | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -103,9 +102,9 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 	// Setup DSQL driver
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb | version_string
-----------------|------|------|---------------------------------------------
- 150000         | heap | NULL | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -158,9 +157,9 @@ func TestDSQL_NoLock(t *testing.T) {
 	// Setup DSQL driver
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb | version_string
-----------------|------|------|---------------------------------------------
- 150000         | heap | NULL | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -225,9 +224,9 @@ func TestDSQL_RegularPostgresNotAffected(t *testing.T) {
 	// Test that regular PostgreSQL is not affected by DSQL detection
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
-  version       |  am  | crdb | version_string
-----------------|------|------|---------------------------------------------
- 150000         | heap | NULL | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1
 `))
 
 	drv, err := Open(db)
@@ -239,7 +238,6 @@ func TestDSQL_RegularPostgresNotAffected(t *testing.T) {
 	// Verify JSON columns are allowed for regular PostgreSQL
 	regularDrv := drv.(*Driver)
 	require.False(t, regularDrv.conn.dsql)
-	require.False(t, regularDrv.conn.crdb)
 
 	// Test ColumnChange allows JSON types for regular PostgreSQL
 	from := &schema.Column{
