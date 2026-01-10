@@ -164,11 +164,13 @@ func openWithScheme(db schema.ExecQuerier, isDSQLScheme bool) (migrate.Driver, e
 // and will fail on regular PostgreSQL.
 func isAuroraDSQL(db schema.ExecQuerier) bool {
 	rows, err := db.QueryContext(context.Background(), "SELECT aurora_version()")
+	if rows != nil {
+		defer rows.Close()
+	}
 	if err != nil {
 		// Function doesn't exist or failed - not Aurora DSQL
 		return false
 	}
-	defer rows.Close()
 	
 	// If we can call aurora_version() successfully, it's Aurora DSQL
 	var auroraVer sql.NullString
