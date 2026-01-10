@@ -7,6 +7,7 @@
 package postgres
 
 import (
+	"context"
 	"net/url"
 	"testing"
 
@@ -266,4 +267,33 @@ func TestDSQL_RegularPostgresNotAffected(t *testing.T) {
 	table := &schema.Table{Name: "users"}
 	_, err = regularDrv.Differ.(*sqlx.Diff).DiffDriver.ColumnChange(table, from, to, nil)
 	require.NoError(t, err)
+}
+
+func TestDSQL_LockNotSupported(t *testing.T) {
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Setup DSQL driver
+	m.ExpectQuery(sqltest.Escape(paramsQuery)).
+		WillReturnRows(sqltest.Rows(`
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+`))
+
+	drv, err := Open(db)
+	require.NoError(t, err)
+
+	// Verify it's a noLockDriver
+	require.IsType(t, noLockDriver{}, drv)
+
+	// Attempt to acquire a lock should return an error
+	locker, ok := drv.(schema.Locker)
+	require.True(t, ok, "noLockDriver should implement schema.Locker")
+
+	unlock, err := locker.Lock(context.Background(), "test_lock", 0)
+	require.Error(t, err)
+	require.Nil(t, unlock)
+	require.Contains(t, err.Error(), "Aurora DSQL does not support advisory locks")
 }
