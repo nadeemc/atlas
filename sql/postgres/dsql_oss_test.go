@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
+	"time"
 
 	"ariga.io/atlas/sql/internal/sqltest"
 	"ariga.io/atlas/sql/internal/sqlx"
@@ -301,7 +302,7 @@ func TestDSQL_RegularPostgresNotAffected(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestDSQL_LockNotSupported(t *testing.T) {
+func TestDSQL_TableBasedLocking(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -327,14 +328,72 @@ func TestDSQL_LockNotSupported(t *testing.T) {
 	// Verify it's a noLockDriver
 	require.IsType(t, noLockDriver{}, drv)
 
-	// Attempt to acquire a lock should return an error
+	// Verify that DSQL driver uses table-based locking instead of advisory locks
 	locker, ok := drv.(schema.Locker)
 	require.True(t, ok, "noLockDriver should implement schema.Locker")
 
-	unlock, err := locker.Lock(context.Background(), "test_lock", 0)
+	// Mock CREATE TABLE IF NOT EXISTS for lock table (match any whitespace)
+	m.ExpectExec("CREATE TABLE IF NOT EXISTS atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Mock successful lock acquisition via INSERT
+	m.ExpectExec("INSERT INTO atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	unlock, err := locker.Lock(context.Background(), "test_lock", time.Second)
+	require.NoError(t, err, "table-based locking should succeed for DSQL")
+	require.NotNil(t, unlock)
+
+	// Mock DELETE for unlock
+	m.ExpectExec("DELETE FROM atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = unlock()
+	require.NoError(t, err)
+	require.NoError(t, m.ExpectationsWereMet())
+}
+
+func TestDSQL_TableBasedLockingTimeout(t *testing.T) {
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Setup DSQL driver
+	m.ExpectQuery(sqltest.Escape(paramsQuery)).
+		WillReturnRows(sqltest.Rows(`
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+`))
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
+`))
+
+	drv, err := Open(db)
+	require.NoError(t, err)
+	locker, ok := drv.(schema.Locker)
+	require.True(t, ok)
+
+	// Mock CREATE TABLE
+	m.ExpectExec("CREATE TABLE IF NOT EXISTS atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Mock INSERT that returns 0 rows affected (lock already held)
+	m.ExpectExec("INSERT INTO atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Second attempt should also fail
+	m.ExpectExec("INSERT INTO atlas_migration_locks").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Try to acquire lock with short timeout - should fail
+	unlock, err := locker.Lock(context.Background(), "test_lock", 50*time.Millisecond)
 	require.Error(t, err)
 	require.Nil(t, unlock)
-	require.Contains(t, err.Error(), "Aurora DSQL does not support advisory locks")
+	require.Equal(t, schema.ErrLocked, err)
 }
 
 func TestDSQL_DetectionViaAuroraVersion(t *testing.T) {

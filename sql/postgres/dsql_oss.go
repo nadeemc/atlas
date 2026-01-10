@@ -43,9 +43,14 @@ type (
 
 // Lock implements the schema.Locker interface for noLockDriver.
 // Aurora DSQL does not support advisory locks (pg_try_advisory_lock, pg_advisory_lock),
-// so this method returns an error indicating the feature is unsupported.
-func (noLockDriver) Lock(context.Context, string, time.Duration) (schema.UnlockFunc, error) {
-	return nil, fmt.Errorf("postgres: Aurora DSQL does not support advisory locks")
+// so this implementation uses a table-based locking mechanism as a workaround.
+// It creates a lock table and uses row-level locking to ensure mutual exclusion.
+func (d noLockDriver) Lock(ctx context.Context, name string, timeout time.Duration) (schema.UnlockFunc, error) {
+	conn, ok := d.noLocker.(*Driver)
+	if !ok {
+		return nil, fmt.Errorf("postgres: unexpected driver type for DSQL locking")
+	}
+	return tableLock(ctx, conn.ExecQuerier, name, timeout)
 }
 
 // InspectSchema inspects and returns the schema description for Aurora DSQL.
@@ -107,4 +112,73 @@ func (dd *dsqlDiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, o
 		return dd.diff.ColumnChange(fromT, from, &modifiedTo, opts)
 	}
 	return dd.diff.ColumnChange(fromT, from, to, opts)
+}
+
+// tableLock implements table-based locking for Aurora DSQL.
+// It creates a dedicated lock table and uses row-level locking to ensure mutual exclusion.
+// This is used as a workaround for the lack of advisory lock support in Aurora DSQL.
+func tableLock(ctx context.Context, conn schema.ExecQuerier, name string, timeout time.Duration) (schema.UnlockFunc, error) {
+	// Create lock table if it doesn't exist
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS atlas_migration_locks (
+			lock_id TEXT PRIMARY KEY,
+			locked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			locked_by TEXT
+		)
+	`
+	if _, err := conn.ExecContext(ctx, createTableSQL); err != nil {
+		return nil, fmt.Errorf("postgres: creating lock table: %w", err)
+	}
+
+	// Try to acquire the lock by inserting a row
+	// Use a transaction to ensure atomicity
+	var (
+		start    = time.Now()
+		lockInfo = fmt.Sprintf("atlas-lock-%d", time.Now().UnixNano())
+	)
+
+	for {
+		// Try to insert the lock row
+		insertSQL := `
+			INSERT INTO atlas_migration_locks (lock_id, locked_by)
+			VALUES ($1, $2)
+			ON CONFLICT (lock_id) DO NOTHING
+		`
+		result, err := conn.ExecContext(ctx, insertSQL, name, lockInfo)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: acquiring lock: %w", err)
+		}
+
+		// Check if we successfully inserted the row
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("postgres: checking lock acquisition: %w", err)
+		}
+
+		if rowsAffected > 0 {
+			// Successfully acquired the lock
+			return func() error {
+				// Release the lock by deleting the row
+				deleteSQL := `DELETE FROM atlas_migration_locks WHERE lock_id = $1 AND locked_by = $2`
+				_, err := conn.ExecContext(context.Background(), deleteSQL, name, lockInfo)
+				if err != nil {
+					return fmt.Errorf("postgres: releasing lock: %w", err)
+				}
+				return nil
+			}, nil
+		}
+
+		// Lock is held by another process, check timeout
+		if time.Since(start) > timeout {
+			return nil, schema.ErrLocked
+		}
+
+		// Wait before retrying
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			// Continue to next iteration
+		}
+	}
 }
