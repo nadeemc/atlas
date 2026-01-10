@@ -63,7 +63,7 @@ func init() {
 		DriverName,
 		sqlclient.OpenerFunc(opener),
 		sqlclient.RegisterDriverOpener(Open),
-		sqlclient.RegisterFlavours("postgresql", "aurora_dsql", "dsql"),
+		sqlclient.RegisterFlavours("postgresql", "dsql"),
 		sqlclient.RegisterCodec(codec, codec),
 		sqlclient.RegisterURLParser(parser{}),
 	)
@@ -432,7 +432,16 @@ type parser struct{}
 
 // ParseURL implements the sqlclient.URLParser interface.
 func (parser) ParseURL(u *url.URL) *sqlclient.URL {
-	return &sqlclient.URL{URL: u, DSN: u.String(), Schema: u.Query().Get("search_path")}
+	dsn := u.String()
+	// Convert dsql:// scheme to postgres:// for the actual connection.
+	// Aurora DSQL uses PostgreSQL-compatible protocol but may be addressed with dsql:// scheme.
+	if u.Scheme == "dsql" {
+		// Create a copy of the URL with postgres scheme
+		nu := *u
+		nu.Scheme = "postgres"
+		dsn = nu.String()
+	}
+	return &sqlclient.URL{URL: u, DSN: dsn, Schema: u.Query().Get("search_path")}
 }
 
 // ChangeSchema implements the sqlclient.SchemaChanger interface.
