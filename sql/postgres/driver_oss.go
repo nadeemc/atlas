@@ -172,12 +172,15 @@ func isAuroraDSQL(db schema.ExecQuerier) bool {
 		return false
 	}
 	
-	// If we can call aurora_version() successfully, it's Aurora DSQL
+	// If we can call aurora_version() successfully, it's Aurora DSQL.
+	// We scan the result to ensure the query completed successfully,
+	// but the actual version value doesn't affect the DSQL determination.
 	var auroraVer sql.NullString
 	if err := sqlx.ScanOne(rows, &auroraVer); err != nil {
 		return false
 	}
-	return sqlx.ValidString(auroraVer)
+	// Successfully called aurora_version() - this is Aurora DSQL
+	return true
 }
 
 func (d *Driver) dev() *sqlx.DevDriver {
