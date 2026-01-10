@@ -8,6 +8,8 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
@@ -38,6 +40,13 @@ type (
 		noLocker
 	}
 )
+
+// Lock implements the schema.Locker interface for noLockDriver.
+// Aurora DSQL does not support advisory locks (pg_try_advisory_lock, pg_advisory_lock),
+// so this method returns an error indicating the feature is unsupported.
+func (noLockDriver) Lock(context.Context, string, time.Duration) (schema.UnlockFunc, error) {
+	return nil, fmt.Errorf("postgres: Aurora DSQL does not support advisory locks")
+}
 
 // InspectSchema inspects and returns the schema description for Aurora DSQL.
 // Converts JSON/JSONB columns to text, as Aurora DSQL doesn't support JSON column types
