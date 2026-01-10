@@ -75,7 +75,9 @@ func opener(_ context.Context, u *url.URL) (*sqlclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	drv, err := Open(db)
+	// Check if URL scheme indicates DSQL (dsql://)
+	isDSQLScheme := u.Scheme == "dsql"
+	drv, err := openWithScheme(db, isDSQLScheme)
 	if err != nil {
 		if cerr := db.Close(); cerr != nil {
 			err = fmt.Errorf("%w: %v", err, cerr)
@@ -100,10 +102,18 @@ func opener(_ context.Context, u *url.URL) (*sqlclient.Client, error) {
 // It detects the database variant (regular PostgreSQL or Aurora DSQL)
 // and returns the appropriate driver implementation with variant-specific logic.
 //
-// Aurora DSQL is detected by checking if the version string contains "aurora_dsql".
+// Aurora DSQL is detected by:
+// 1. Checking if aurora_version() function exists and can be called
+// 2. Falling back to checking if the version string contains "aurora_dsql"
 // When detected, it returns a noLockDriver with dsqlDiff and dsqlInspect implementations
 // that enforce DSQL limitations (no JSON types, no advisory locks).
 func Open(db schema.ExecQuerier) (migrate.Driver, error) {
+	return openWithScheme(db, false)
+}
+
+// openWithScheme opens a new PostgreSQL driver with optional URL scheme hint.
+// If isDSQLScheme is true, it indicates the connection URL used dsql:// scheme.
+func openWithScheme(db schema.ExecQuerier, isDSQLScheme bool) (migrate.Driver, error) {
 	c := &conn{ExecQuerier: db}
 	rows, err := db.QueryContext(context.Background(), paramsQuery)
 	if err != nil {
@@ -120,9 +130,18 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 		return nil, fmt.Errorf("postgres: unsupported postgres version: %d", c.version)
 	}
 	c.accessMethod = am.String
-	// Detect Aurora DSQL by checking the version string for "aurora_dsql".
-	// Aurora DSQL does not support pg_try_advisory_lock or JSON column types.
-	if c.dsql = sqlx.ValidString(versionStr) && strings.Contains(strings.ToLower(versionStr.String), "aurora_dsql"); c.dsql {
+	
+	// Detect Aurora DSQL using multiple methods:
+	// 1. If URL scheme is dsql://, it's definitely DSQL
+	// 2. Try calling aurora_version() function (only exists in Aurora DSQL)
+	// 3. Fallback to checking version string for "aurora_dsql"
+	c.dsql = isDSQLScheme || isAuroraDSQL(db)
+	
+	if !c.dsql && sqlx.ValidString(versionStr) {
+		c.dsql = strings.Contains(strings.ToLower(versionStr.String), "aurora_dsql")
+	}
+	
+	if c.dsql {
 		return noLockDriver{
 			&Driver{
 				conn:        c,
@@ -138,6 +157,30 @@ func Open(db schema.ExecQuerier) (migrate.Driver, error) {
 		Inspector:   &inspect{c},
 		PlanApplier: &planApply{c},
 	}, nil
+}
+
+// isAuroraDSQL checks if the database is Aurora DSQL by attempting to call
+// the aurora_version() function. This function only exists in Aurora DSQL
+// and will fail on regular PostgreSQL.
+func isAuroraDSQL(db schema.ExecQuerier) bool {
+	rows, err := db.QueryContext(context.Background(), "SELECT aurora_version()")
+	if rows != nil {
+		defer rows.Close()
+	}
+	if err != nil {
+		// Function doesn't exist or failed - not Aurora DSQL
+		return false
+	}
+	
+	// If we can call aurora_version() successfully, it's Aurora DSQL.
+	// We scan the result to ensure the query completed successfully,
+	// but the actual version value doesn't affect the DSQL determination.
+	var auroraVer sql.NullString
+	if err := sqlx.ScanOne(rows, &auroraVer); err != nil {
+		return false
+	}
+	// Successfully called aurora_version() - this is Aurora DSQL
+	return true
 }
 
 func (d *Driver) dev() *sqlx.DevDriver {

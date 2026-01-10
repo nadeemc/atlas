@@ -8,6 +8,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"testing"
 
@@ -23,12 +24,19 @@ func TestDSQL_Detection(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	// Test that Aurora DSQL is detected via version string
+	// Test that Aurora DSQL is detected via aurora_version() function
 	m.ExpectQuery(sqltest.Escape(paramsQuery)).
 		WillReturnRows(sqltest.Rows(`
   version       |  am  | version_string
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+`))
+	// Mock aurora_version() function call
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -51,6 +59,13 @@ func TestDSQL_JSONColumnConversion(t *testing.T) {
   version       |  am  | version_string
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+`))
+	// Mock aurora_version() function call
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
 `))
 
 	drv, err := Open(db)
@@ -120,6 +135,13 @@ func TestDSQL_InspectSchemaWithJSON(t *testing.T) {
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
+	// Mock aurora_version() function call
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
+`))
 
 	drv, err := Open(db)
 	require.NoError(t, err)
@@ -181,6 +203,13 @@ func TestDSQL_NoLock(t *testing.T) {
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
+	// Mock aurora_version() function call
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
+`))
 
 	drv, err := Open(db)
 	require.NoError(t, err)
@@ -239,6 +268,9 @@ func TestDSQL_RegularPostgresNotAffected(t *testing.T) {
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1
 `))
+	// Mock aurora_version() function call failure (function doesn't exist in regular PostgreSQL)
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnError(fmt.Errorf("function aurora_version() does not exist"))
 
 	drv, err := Open(db)
 	require.NoError(t, err)
@@ -281,6 +313,13 @@ func TestDSQL_LockNotSupported(t *testing.T) {
 ----------------|------|---------------------------------------------
  150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
 `))
+	// Mock aurora_version() function call
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 1.0.0
+`))
 
 	drv, err := Open(db)
 	require.NoError(t, err)
@@ -296,4 +335,59 @@ func TestDSQL_LockNotSupported(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, unlock)
 	require.Contains(t, err.Error(), "Aurora DSQL does not support advisory locks")
+}
+
+func TestDSQL_DetectionViaAuroraVersion(t *testing.T) {
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Test that Aurora DSQL is detected via aurora_version() function
+	// even when version string doesn't contain "aurora_dsql"
+	m.ExpectQuery(sqltest.Escape(paramsQuery)).
+		WillReturnRows(sqltest.Rows(`
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1
+`))
+	// Mock aurora_version() function call - this indicates it's Aurora DSQL
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnRows(sqltest.Rows(`
+ aurora_version
+----------------
+ 15.0.0
+`))
+
+	drv, err := Open(db)
+	require.NoError(t, err)
+	require.IsType(t, noLockDriver{}, drv)
+
+	// Verify it's a DSQL driver
+	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
+	require.True(t, dsqlDrv.conn.dsql)
+}
+
+func TestDSQL_DetectionViaVersionStringFallback(t *testing.T) {
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Test fallback detection via version string when aurora_version() fails
+	m.ExpectQuery(sqltest.Escape(paramsQuery)).
+		WillReturnRows(sqltest.Rows(`
+  version       |  am  | version_string
+----------------|------|---------------------------------------------
+ 150000         | heap | PostgreSQL 15.0 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 7.3.1, Aurora_DSQL 1.0.0
+`))
+	// Mock aurora_version() function call failure
+	m.ExpectQuery(sqltest.Escape("SELECT aurora_version()")).
+		WillReturnError(fmt.Errorf("function aurora_version() does not exist"))
+
+	drv, err := Open(db)
+	require.NoError(t, err)
+	require.IsType(t, noLockDriver{}, drv)
+
+	// Verify it's a DSQL driver detected via version string fallback
+	dsqlDrv := drv.(noLockDriver).noLocker.(*Driver)
+	require.True(t, dsqlDrv.conn.dsql)
 }
