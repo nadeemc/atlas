@@ -130,8 +130,8 @@ func tableLock(ctx context.Context, conn schema.ExecQuerier, name string, timeou
 		return nil, fmt.Errorf("postgres: creating lock table: %w", err)
 	}
 
-	// Try to acquire the lock by inserting a row
-	// Use a transaction to ensure atomicity
+	// Try to acquire the lock by inserting a row.
+	// INSERT ... ON CONFLICT provides atomicity without explicit transactions.
 	var (
 		start    = time.Now()
 		lockInfo = fmt.Sprintf("atlas-lock-%d", time.Now().UnixNano())
@@ -158,9 +158,14 @@ func tableLock(ctx context.Context, conn schema.ExecQuerier, name string, timeou
 		if rowsAffected > 0 {
 			// Successfully acquired the lock
 			return func() error {
-				// Release the lock by deleting the row
+				// Release the lock by deleting the row.
+				// Use a background context with timeout to ensure unlock completes
+				// even if the original context was cancelled.
+				unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				
 				deleteSQL := `DELETE FROM atlas_migration_locks WHERE lock_id = $1 AND locked_by = $2`
-				_, err := conn.ExecContext(context.Background(), deleteSQL, name, lockInfo)
+				_, err := conn.ExecContext(unlockCtx, deleteSQL, name, lockInfo)
 				if err != nil {
 					return fmt.Errorf("postgres: releasing lock: %w", err)
 				}
